@@ -434,6 +434,15 @@ const qemuPCIPassthruTemplate = `
 {{- if .Xopregion }}
   x-igd-opregion = "on"
 {{- end}}
+{{- if .Romfile }}
+  romfile = "{{.Romfile}}"
+{{- end}}
+{{- if .XigdLpc }}
+  x-igd-lpc = "on"
+{{- end}}
+{{- if .XigdGms }}
+  x-igd-gms = "{{.XigdGms}}"
+{{- end}}
 `
 
 const qemuSerialTemplate = `
@@ -513,6 +522,9 @@ type tQemuPCIPassthruContext struct {
 	PciShortAddr string
 	Xvga         bool
 	Xopregion    bool
+	Romfile      string
+	XigdLpc      bool
+	XigdGms      uint
 	Bus          string
 	Addr         string
 }
@@ -1450,6 +1462,11 @@ func (f *pciAssignmentsTemplateFiller) do(pciAssignments []pciDevice) error {
 					// we set opregion for Intel vga
 					// https://github.com/qemu/qemu/blob/stable-5.0/docs/igd-assign.txt#L91-L96
 					pciPTContext.Xopregion = true
+					if romPath := igdRomPath(pa.ioBundle.PciLong); romPath != "" {
+						pciPTContext.Romfile = romPath
+						pciPTContext.XigdLpc = true
+						pciPTContext.XigdGms = 2
+					}
 				}
 			}
 		}
@@ -2103,4 +2120,35 @@ func generateDmidecodeSmbiosString(sysInfo types.DmiSystemInfo) string {
 	smbiosString := "type=1," + strings.Join(fields, ",")
 	logrus.Infof("Generated SMBIOS string: %s", smbiosString)
 	return smbiosString
+}
+
+// igdRomPath returns the path to a pre-staged Intel GOP ROM for the given
+// PCI device long address (e.g. "0000:00:02.0"), or "" if none found.
+// Checks /persist/vault/kvm/igd/ first (operator override, no rebuild needed),
+// then /kvm/igd/ (baked into this pillar container image).
+func igdRomPath(pciLong string) string {
+	searchDirs := []string{
+		"/persist/vault/kvm/igd",
+		"/kvm/igd",
+	}
+
+	devID := ""
+	deviceFile := sysfsPciDevices + pciLong + "/device"
+	if b, err := os.ReadFile(deviceFile); err == nil {
+		devID = strings.TrimSpace(strings.TrimSuffix(string(b), "\n"))
+	}
+
+	for _, dir := range searchDirs {
+		if devID != "" {
+			p := fmt.Sprintf("%s/%s.rom", dir, devID)
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+		p := dir + "/igd.rom"
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return ""
 }
