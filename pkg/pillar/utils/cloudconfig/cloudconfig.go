@@ -17,11 +17,23 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// EveConfig holds EVE-specific settings embedded in a cloud-config file under
+// the "eve_config" key. These settings are consumed by EVE before the VM is
+// launched and are invisible to the guest's cloud-init implementation
+// (unknown top-level keys are silently ignored by standard cloud-init).
+type EveConfig struct {
+	// DisableVMX disables Intel VMX (nested virtualisation) for the VM by
+	// appending ",-vmx" to the QEMU -cpu argument. Has no effect on non-x86
+	// architectures or on Xen/FML domains.
+	DisableVMX bool `yaml:"disable_vmx"`
+}
+
 // CloudConfig represents the structure of the cloud configuration file.
 // Only supported fields are defined here. The rest is ignored.
 type CloudConfig struct {
 	RunCmd     []string       `yaml:"runcmd"`
 	WriteFiles []WritableFile `yaml:"write_files" validate:"dive"` //nolint:tagliatelle // cloud-init standard uses snake_case
+	EveConfig  EveConfig      `yaml:"eve_config"`
 }
 
 // WritableFile represents a file that can be written to disk with the specified content, permissions, encoding and owner.
@@ -62,6 +74,25 @@ func ParseCloudConfig(ci string) (*CloudConfig, error) {
 		return nil, err
 	}
 	return &cc, nil
+}
+
+// StripEveConfig removes the "eve_config" key from a cloud-config string and
+// returns the sanitised YAML. This prevents EVE-specific directives from
+// reaching the guest's cloud-init, which would otherwise log warnings (or fail
+// in strict mode) for the unknown key.
+// The leading "#cloud-config" header is preserved.
+func StripEveConfig(ci string) (string, error) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(ci), &raw); err != nil {
+		return "", err
+	}
+	delete(raw, "eve_config")
+	out, err := yaml.Marshal(raw)
+	if err != nil {
+		return "", err
+	}
+	// Preserve the mandatory "#cloud-config" first line.
+	return "#cloud-config\n" + string(out), nil
 }
 
 // WriteFile checks the content of a WritableFile and writes it to the specified rootPath.

@@ -1010,6 +1010,12 @@ func (ctx KvmContext) Setup(status types.DomainStatus, config types.DomainConfig
 	} else {
 		dmArgs = append(dmArgs, ctx.dmCPUArgs...)
 	}
+	if status.DisableVMX && runtime.GOARCH == "amd64" {
+		// Disable nested virtualisation by appending ",-vmx" to the CPU
+		// model string (the last element of the CPU args slice, e.g. "host"
+		// or "host,hv_time,..."). Applies to both HVM and FML modes.
+		dmArgs[len(dmArgs)-1] += ",-vmx"
+	}
 
 	if config.MetaDataType == types.MetaDataOpenStack {
 		// we need to set product_name to support cloud-init

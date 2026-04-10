@@ -2287,6 +2287,10 @@ func configToStatus(ctx *domainContext, config types.DomainConfig,
 
 	//clean environment variables
 	status.EnvVariables = nil
+	// Reset EVE-derived flags so they are always re-evaluated from the current
+	// cloud-init data. This matters on handleModify (existing status reused)
+	// and when cloud-init is removed entirely.
+	status.DisableVMX = false
 
 	// Fetch cloud-init userdata
 	if config.IsCipher || config.CloudInitUserData != nil {
@@ -2301,6 +2305,16 @@ func configToStatus(ctx *domainContext, config types.DomainConfig,
 		// part of the vm config, but desprate times call for desprate measures.
 		if cloudconfig.IsCloudConfig(ciStr) {
 			setFmlCustomResolution(ciStr, status)
+			setEveConfigFromCloudInit(ciStr, status)
+			// Strip EVE-specific keys so the guest cloud-init never sees them.
+			// Unknown top-level keys trigger warnings (or failures in strict mode)
+			// in cloud-init >= 21.x.
+			stripped, err := cloudconfig.StripEveConfig(ciStr)
+			if err != nil {
+				log.Warningf("configToStatus: failed to strip eve_config from cloud-init, using original: %v", err)
+			} else {
+				ciStr = stripped
+			}
 		}
 
 		if status.OCIConfigDir != "" { // If AppInstance is a container, we need to parse cloud-init config and apply the supported parts
@@ -2362,6 +2376,44 @@ func setFmlCustomResolution(config string, status *types.DomainStatus) {
 			status.FmlCustomResolution = fmlCustomResolution
 			log.Noticef("FML resolution is set to: %s", status.FmlCustomResolution)
 		}
+	}
+}
+
+// setEveConfigFromCloudInit reads the "eve_config" section from a cloud-config
+// string and applies any recognised settings to the domain status before the
+// hypervisor is started. Unknown keys inside "eve_config" are silently ignored
+// by standard cloud-init implementations running inside the guest.
+//
+// We intentionally avoid ParseCloudConfig here and do a raw YAML unmarshal
+// instead, so that unusual-but-valid cloud-config content (e.g. runcmd entries
+// that are lists rather than plain strings) does not prevent eve_config from
+// being processed.
+func setEveConfigFromCloudInit(config string, status *types.DomainStatus) {
+	var raw map[string]interface{}
+	if err := yaml.Unmarshal([]byte(config), &raw); err != nil {
+		log.Errorf("setEveConfigFromCloudInit: failed to parse cloud-config YAML: %v", err)
+		return
+	}
+	eveRaw, ok := raw["eve_config"]
+	if !ok {
+		return
+	}
+	// Re-marshal the eve_config subtree and unmarshal into the typed struct so
+	// we get proper type coercion without touching the rest of the document.
+	eveBytes, err := yaml.Marshal(eveRaw)
+	if err != nil {
+		log.Errorf("setEveConfigFromCloudInit: failed to re-marshal eve_config: %v", err)
+		return
+	}
+	var ec cloudconfig.EveConfig
+	if err := yaml.Unmarshal(eveBytes, &ec); err != nil {
+		log.Errorf("setEveConfigFromCloudInit: failed to unmarshal eve_config: %v", err)
+		return
+	}
+	status.DisableVMX = ec.DisableVMX
+	if ec.DisableVMX {
+		log.Noticef("setEveConfigFromCloudInit: DisableVMX enabled for domain %s",
+			status.DisplayName)
 	}
 }
 

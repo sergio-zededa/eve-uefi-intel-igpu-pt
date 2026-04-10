@@ -347,6 +347,10 @@ type DomainStatus struct {
 	// FmlCustomResolution is the custom resolution for FML mode,
 	// xxx: this should be moved to VmConfig
 	FmlCustomResolution string
+	// DisableVMX disables Intel VMX (nested virtualisation) for this domain.
+	// Set from the eve_config.disable_vmx field in cloud-init userdata.
+	// Only effective on amd64/KVM; ignored elsewhere.
+	DisableVMX bool
 	// if this node is the DNiD of the App
 	IsDNidNode bool
 	// the device name is used for kube node name
