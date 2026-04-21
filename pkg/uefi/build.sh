@@ -33,6 +33,12 @@ case $(uname -m) in
              cp Build/OvmfX64/${TARGET}_*/FV/OVMF*.fd .
              build -b ${TARGET} -t GCC5 -a X64 -n "$(nproc)" -p OvmfPkg/OvmfXen.dsc
              cp Build/OvmfXen/${TARGET}_*/FV/OVMF.fd OVMF_PVH.fd
+             # Build VfioIgdPkg open-source IGD Option ROM (IgdAssignmentDxe only).
+             # Handles Gen11+ 64-bit BDSM at PCI config 0xC0, unlike classic IgdAssignmentDxe.
+             build -b ${TARGET} -t GCC5 -a X64 -n "$(nproc)" -p VfioIgdPkg/VfioIgdPkg.dsc
+             EfiRom -f 0x8086 -i 0xffff \
+                 -e Build/VfioIgdPkg/${TARGET}_GCC5/X64/IgdAssignmentDxe.efi \
+                 -o igd.rom
              ;;
           *) echo "Unsupported architecture $(uname). Bailing."
              exit 1
