@@ -321,6 +321,16 @@ type VolumesSnapshotConfig struct {
 	VolumeIDs []uuid.UUID
 	// AppUUID used as a backlink to the app
 	AppUUID uuid.UUID
+	// Live requests the snapshot to be taken while the app instance keeps
+	// running. The volumes are then in use by the hypervisor, so volumemgr
+	// asks the hypervisor to create the snapshot (and the guest agent, if
+	// any, to quiesce the guest first) instead of touching the volume files
+	// itself. Only meaningful for VolumesSnapshotCreate and only supported
+	// with KVM; rollback and deletion still require the app to be halted.
+	Live bool
+	// DomainName identifies the domain running the app instance. It is used
+	// to locate the hypervisor control sockets when Live is set.
+	DomainName string
 }
 
 // Key returns unique key for the snapshot

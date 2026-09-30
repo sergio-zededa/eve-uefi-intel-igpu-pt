@@ -1220,13 +1220,20 @@ func updateSnapshotsInAIStatus(status *types.AppInstanceStatus, config types.App
 }
 
 // prepareVolumesSnapshotConfigs generates a 'volumesSnapshotConfig' for each pending snapshot request with a prepared configuration.
-// Creating and immediately triggering the 'volumesSnapshotConfig' is not possible due to the following reasons:
-// - A snapshot can only be initiated post the application stoppage.
+// Creating and immediately triggering the 'volumesSnapshotConfig' is not always possible due to the following reasons:
+// - An offline snapshot can only be initiated post the application stoppage.
 // - Upon application termination, the volumes list within the configuration might have already been modified, leading to inconsistencies.
 // Hence, we need this function to prepare the 'volumesSnapshotConfig' with the volumes list that was used when the snapshot was requested.
+// Requests that have already been triggered (handed over to volumemgr) are skipped: re-publishing them would only
+// make volumemgr report the snapshot as already existing, and would overwrite the config saved for the snapshot.
 func prepareVolumesSnapshotConfigs(ctx *zedmanagerContext, config types.AppInstanceConfig, status *types.AppInstanceStatus) []types.VolumesSnapshotConfig {
 	var volumesSnapshotConfigList []types.VolumesSnapshotConfig
 	for _, snapshot := range status.SnapStatus.RequestedSnapshots {
+		if !snapshot.TimeTriggered.IsZero() {
+			log.Functionf("Snapshot %s already triggered at %v, not preparing it again",
+				snapshot.Snapshot.SnapshotID, snapshot.TimeTriggered)
+			continue
+		}
 		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate || snapshot.Snapshot.SnapshotType == types.SnapshotTypeImmediate {
 			log.Noticef("Creating volumesSnapshotConfig for snapshot %s", snapshot.Snapshot.SnapshotID)
 			volumesSnapshotConfig := types.VolumesSnapshotConfig{
@@ -1244,6 +1251,25 @@ func prepareVolumesSnapshotConfigs(ctx *zedmanagerContext, config types.AppInsta
 	return volumesSnapshotConfigList
 }
 
+// canTakeLiveSnapshot reports whether the volumes of the app instance can be
+// snapshotted while it keeps running. That requires the app instance to be an
+// activated KVM domain: only qemu exposes the control socket volumemgr uses to
+// snapshot volumes that are in use. A halted app instance can (and does) get an
+// offline snapshot without any downtime being added.
+func canTakeLiveSnapshot(ctx *zedmanagerContext, config types.AppInstanceConfig, domainStatus *types.DomainStatus) bool {
+	if ctx.hypervisorPtr == nil || *ctx.hypervisorPtr != hypervisor.KVMHypervisorName {
+		return false
+	}
+	if config.FixedResources.VirtualizationMode == types.NOHYPER {
+		// Runs as a plain container, there is no qemu to talk to.
+		return false
+	}
+	if domainStatus == nil || !domainStatus.Activated || domainStatus.DomainName == "" {
+		return false
+	}
+	return true
+}
+
 // removePreparedVolumesSnapshotConfig removes the prepared volumesSnapshotConfig from the list of prepared volumesSnapshotConfigs
 func removePreparedVolumesSnapshotConfig(status *types.AppInstanceStatus, id string) {
 	preparedVolumesSnapshotConfigs := &status.SnapStatus.PreparedVolumesSnapshotConfigs
@@ -1258,9 +1284,13 @@ func removePreparedVolumesSnapshotConfig(status *types.AppInstanceStatus, id str
 
 // saveAppInstanceConfigForSnapshot saves the config for the snapshots for which the config has been prepared
 func saveAppInstanceConfigForSnapshot(status *types.AppInstanceStatus, config types.AppInstanceConfig) error {
-	for i, snapshot := range status.SnapStatus.PreparedVolumesSnapshotConfigs {
+	for _, snapshot := range status.SnapStatus.PreparedVolumesSnapshotConfigs {
 		// Set the old config version to the snapshot status
-		status.SnapStatus.RequestedSnapshots[i].ConfigVersion = config.UUIDandVersion
+		for i := range status.SnapStatus.RequestedSnapshots {
+			if status.SnapStatus.RequestedSnapshots[i].Snapshot.SnapshotID == snapshot.SnapshotID {
+				status.SnapStatus.RequestedSnapshots[i].ConfigVersion = config.UUIDandVersion
+			}
+		}
 		// Serialize the old config and store it in a file
 		err := serializeAppInstanceConfigToSnapshot(config, snapshot.SnapshotID)
 		if err != nil {
@@ -1497,14 +1527,32 @@ func handleModify(ctxArg interface{}, key string,
 	}
 
 	if status.SnapStatus.SnapshotTakenType == types.SnapshotImmediate {
-		// this is okay as a clash with updated volumes is prevented later by
-		// "Need purge due to %s but not a purgeCmd", so if the user
-		// updates the volumes but does not set the purgeCmd but does
-		// an immediate snapshot, the immediate snapshot will not trigger
-		// an update of the volumes as the purgeCmd is missing
-		status.PurgeInprogress = types.DownloadAndVerify
-		status.PurgeStartedAt = time.Now()
-		restartReason = "Restart to create immediate snapshot"
+		if domainStatus := lookupDomainStatus(ctx, status.Key()); canTakeLiveSnapshot(ctx, config, domainStatus) {
+			// The app instance keeps running: hand the prepared requests to
+			// volumemgr right away, flagged as live, so that the hypervisor
+			// creates the snapshots of the volumes in use.
+			if len(status.SnapStatus.PreparedVolumesSnapshotConfigs) > 0 {
+				log.Noticef("handleModify(%v) for %s: taking immediate snapshot live in domain %s",
+					config.UUIDandVersion, config.DisplayName, domainStatus.DomainName)
+				for i := range status.SnapStatus.PreparedVolumesSnapshotConfigs {
+					status.SnapStatus.PreparedVolumesSnapshotConfigs[i].Live = true
+					status.SnapStatus.PreparedVolumesSnapshotConfigs[i].DomainName = domainStatus.DomainName
+				}
+				triggerSnapshots(ctx, status)
+			}
+		} else {
+			// The volumes cannot be snapshotted while in use (or the app is
+			// not running anyway), so go through a purge-like restart and
+			// take the snapshot once the domain is down.
+			// this is okay as a clash with updated volumes is prevented later by
+			// "Need purge due to %s but not a purgeCmd", so if the user
+			// updates the volumes but does not set the purgeCmd but does
+			// an immediate snapshot, the immediate snapshot will not trigger
+			// an update of the volumes as the purgeCmd is missing
+			status.PurgeInprogress = types.DownloadAndVerify
+			status.PurgeStartedAt = time.Now()
+			restartReason = "Restart to create immediate snapshot"
+		}
 	}
 
 	// Check if we need to roll back to a snapshot, and if so, mark the application

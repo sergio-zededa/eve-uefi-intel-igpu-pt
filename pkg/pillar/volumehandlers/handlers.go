@@ -32,8 +32,14 @@ type VolumeHandler interface {
 	// with current options of VolumeStatus
 	// to be used in storage usage calculation
 	UsageFromStatus() uint64
-	// CreateSnapshot handles snapshot creation process, returns snapshot metadata
+	// CreateSnapshot handles snapshot creation process, returns snapshot metadata.
+	// The volume must not be in use by a running app instance.
 	CreateSnapshot() (interface{}, time.Time, error)
+	// CreateLiveSnapshot handles snapshot creation while the volume is in use by
+	// the running domain domainName, returns snapshot metadata. The metadata is
+	// interchangeable with the one returned by CreateSnapshot, so RollbackToSnapshot
+	// and DeleteSnapshot work on it without knowing how the snapshot was taken.
+	CreateLiveSnapshot(domainName string) (interface{}, time.Time, error)
 	// RollbackToSnapshot handles rollback process
 	RollbackToSnapshot(snapshotMeta interface{}) error
 	// DeleteSnapshot handles snapshot deletion

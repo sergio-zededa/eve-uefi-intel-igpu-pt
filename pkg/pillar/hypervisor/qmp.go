@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/lf-edge/eve/pkg/pillar/types"
@@ -343,4 +344,88 @@ func qmpEventHandler(listenerSocket, executorSocket, domainName string) {
 		}
 	}
 	logrus.Infof("qmpEventHandler: Event channel closed for socket: %s (QMP connection lost)", listenerSocket)
+}
+
+// qmpQueryBlockDevice is the subset of a "query-block" BlockInfo entry that we
+// need to map a volume file back to the qemu block backend ("drive") that
+// serves it.
+type qmpQueryBlockDevice struct {
+	Device   string `json:"device"`
+	Inserted *struct {
+		File     string `json:"file"`
+		NodeName string `json:"node-name"`
+		Driver   string `json:"drv"`
+		Image    struct {
+			Filename string `json:"filename"`
+		} `json:"image"`
+	} `json:"inserted"`
+}
+
+// parseQueryBlockDevices extracts the list of block devices from a raw
+// "query-block" response.
+func parseQueryBlockDevices(raw []byte) ([]qmpQueryBlockDevice, error) {
+	var result struct {
+		Return []qmpQueryBlockDevice `json:"return"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return nil, fmt.Errorf("failed to parse query-block response: %w (JSON response: '%s')", err, raw)
+	}
+	return result.Return, nil
+}
+
+// findBlockDeviceForFile returns the name of the block backend ("drive") whose
+// medium is the given file, or an error if there is none. Paths are compared
+// after cleaning, and both the "file" and the "image.filename" attributes are
+// consulted, since qemu reports the latter for some protocol drivers.
+func findBlockDeviceForFile(devices []qmpQueryBlockDevice, file string) (string, error) {
+	want := filepath.Clean(file)
+	for _, dev := range devices {
+		if dev.Inserted == nil || dev.Device == "" {
+			continue
+		}
+		if filepath.Clean(dev.Inserted.File) == want ||
+			(dev.Inserted.Image.Filename != "" && filepath.Clean(dev.Inserted.Image.Filename) == want) {
+			return dev.Device, nil
+		}
+	}
+	return "", fmt.Errorf("no qemu block device is backed by %s", file)
+}
+
+// QmpFindBlockDevice returns the name of the qemu block backend ("drive") that
+// is backed by the given file in the domain reachable through the given QMP
+// socket. The command is issued once, without the usual dial retries: the
+// caller only asks this for a domain it knows is running, and a long retry
+// loop would stretch the window during which guest filesystems are frozen.
+func QmpFindBlockDevice(socket, file string) (string, error) {
+	cmd := `{ "execute": "query-block" }`
+	logrus.Debugf("executing QMP command: %s", cmd)
+	raw, err := execRawCmd(socket, cmd, false)
+	if err != nil {
+		return "", fmt.Errorf("query-block failed on %s: %w", socket, err)
+	}
+	devices, err := parseQueryBlockDevices(raw)
+	if err != nil {
+		return "", err
+	}
+	return findBlockDeviceForFile(devices, file)
+}
+
+// QmpExecBlockdevSnapshotInternalSync creates an internal (in-image) qcow2
+// snapshot named name on the given block backend of a running domain. This is
+// the live counterpart of `qemu-img snapshot -c`: qemu flushes the device and
+// writes the snapshot metadata itself, so the image is never touched behind
+// its back. The resulting snapshot carries no VM state and is therefore
+// indistinguishable from an offline one for `qemu-img snapshot -a/-d`.
+func QmpExecBlockdevSnapshotInternalSync(socket, device, name string) error {
+	qmpString, err := buildQMPCommand("blockdev-snapshot-internal-sync",
+		map[string]string{"device": device, "name": name})
+	if err != nil {
+		return err
+	}
+	logrus.Debugf("executing QMP command: %s", qmpString)
+	if _, err = execRawCmd(socket, string(qmpString), false); err != nil {
+		return fmt.Errorf("blockdev-snapshot-internal-sync(%s, %s) failed on %s: %w",
+			device, name, socket, err)
+	}
+	return nil
 }

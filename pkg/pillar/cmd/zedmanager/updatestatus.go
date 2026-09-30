@@ -311,18 +311,20 @@ func doUpdate(ctx *zedmanagerContext,
 func triggerSnapshots(ctx *zedmanagerContext, status *types.AppInstanceStatus) {
 	log.Noticef("triggerSnapshots(%s)", status.Key())
 	timeTriggered := time.Now()
-	// Set time triggered for snapshots that are not triggered by time
-	for _, snapshot := range status.SnapStatus.RequestedSnapshots {
-		if snapshot.Snapshot.SnapshotType == types.SnapshotTypeAppUpdate && snapshot.TimeTriggered.IsZero() {
-			log.Noticef("Setting snapshot %s timeTriggered to %v", snapshot.Snapshot.SnapshotID, timeTriggered)
-			snapshot.TimeTriggered = timeTriggered
-		}
-	}
 	// trigger the snapshots. Use the list of prepared VolumeSnapshotConfigs for that
 	for _, volumesSnapshotConfig := range status.SnapStatus.PreparedVolumesSnapshotConfigs {
-		log.Noticef("Triggering snapshot %s", volumesSnapshotConfig.SnapshotID)
+		log.Noticef("Triggering snapshot %s (live: %t)", volumesSnapshotConfig.SnapshotID, volumesSnapshotConfig.Live)
 		publishVolumesSnapshotConfig(ctx, &volumesSnapshotConfig)
 		removePreparedVolumesSnapshotConfig(status, volumesSnapshotConfig.SnapshotID)
+		// Record when the request was handed over to volumemgr. From now on it
+		// is not a mere request anymore and must not be prepared or dropped again.
+		for i := range status.SnapStatus.RequestedSnapshots {
+			snapshot := &status.SnapStatus.RequestedSnapshots[i]
+			if snapshot.Snapshot.SnapshotID == volumesSnapshotConfig.SnapshotID && snapshot.TimeTriggered.IsZero() {
+				log.Noticef("Setting snapshot %s timeTriggered to %v", snapshot.Snapshot.SnapshotID, timeTriggered)
+				snapshot.TimeTriggered = timeTriggered
+			}
+		}
 	}
 	publishAppInstanceStatus(ctx, status)
 }

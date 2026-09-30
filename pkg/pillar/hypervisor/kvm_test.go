@@ -205,6 +205,17 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
 
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
+
 
 
 [device "pci.2"]
@@ -352,7 +363,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 		if string(result) != expected {
 			t.Errorf("got an unexpected resulting config %s", string(result))
 		}
@@ -474,6 +485,17 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
 
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
+
 
 
 [device "pci.2"]
@@ -621,7 +643,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultUUID, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultUUID, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 		if string(result) != expected {
 			t.Errorf("got an unexpected resulting config %s", string(result))
 		}
@@ -707,6 +729,17 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   driver = "virtconsole"
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
+
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
 
 
 
@@ -860,7 +893,7 @@ func TestCreateDomConfigOnlyCom1(t *testing.T) {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 		if string(result) != expected {
 			t.Errorf("got an unexpected resulting config %s", string(result))
 		}
@@ -1306,6 +1339,17 @@ func domConfigArm64() string {
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
 
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
+
 
 
 [vnc "default"]
@@ -1494,7 +1538,7 @@ func domConfigArm64() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 }
 
 func domConfigAmd64FML() string {
@@ -1597,6 +1641,17 @@ func domConfigAmd64FML() string {
   driver = "virtconsole"
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
+
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
 
 
 
@@ -1797,7 +1852,7 @@ func domConfigAmd64FML() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultUUID, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultUUID, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 }
 
 func domConfigAmd64Legacy() string {
@@ -1887,6 +1942,17 @@ func domConfigAmd64Legacy() string {
   driver = "virtconsole"
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
+
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
 
 
 
@@ -2077,7 +2143,7 @@ func domConfigAmd64Legacy() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 }
 
 func domConfigAmd64() string {
@@ -2167,6 +2233,17 @@ func domConfigAmd64() string {
   driver = "virtconsole"
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
+
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
 
 
 
@@ -2353,7 +2430,7 @@ func domConfigAmd64() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 }
 
 func domConfigContainerVNC() string {
@@ -2443,6 +2520,17 @@ func domConfigContainerVNC() string {
   driver = "virtconsole"
   chardev = "charserial0"
   name = "org.lfedge.eve.console.0"
+
+[chardev "charqga0"]
+  backend = "socket"
+  path = "/run/hypervisor/kvm/%s/qga"
+  server = "on"
+  wait = "off"
+
+[device]
+  driver = "virtserialport"
+  chardev = "charqga0"
+  name = "org.qemu.guest_agent.0"
 
 [chardev "charserial1"]
   backend = "socket"
@@ -2628,7 +2716,7 @@ func domConfigContainerVNC() string {
   driver = "vhost-vsock-pci"
   disable-legacy = "on"
   guest-cid = "3"
-`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
+`, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName, DefaultDomainName)
 }
 
 func TestCreateDom(t *testing.T) {

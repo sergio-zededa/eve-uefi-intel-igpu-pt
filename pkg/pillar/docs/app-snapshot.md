@@ -243,6 +243,30 @@ internally.
    published, and the prepared volumesSnapshotConfig is removed. The app
    instance status is then published.
 
+#### Zedmanager Initial Handling, live creation
+
+Immediate snapshots (`SnapshotTypeImmediate`) do not have to wait for the
+application to stop when the application is a running KVM domain. In that case
+the flow above is shortened in `handleModify`:
+
+1. **Deciding for a live snapshot**: `canTakeLiveSnapshot` checks that the
+   selected hypervisor is KVM, that the application is not a plain container
+   (`NOHYPER`) and that its `DomainStatus` reports an activated domain with a
+   domain name. If any of these fails, the application is restarted and the
+   snapshot is taken offline exactly as described above.
+2. **Flagging the request as live**: the prepared `VolumesSnapshotConfig`s get
+   `Live` set and `DomainName` filled in from the `DomainStatus`, so that
+   volumemgr can find the control sockets of the domain.
+3. **Triggering immediately**: `triggerSnapshots` publishes the configs right
+   away instead of from `removeAIStatus`. It also stamps `TimeTriggered` on the
+   corresponding `RequestedSnapshots` entries; `prepareVolumesSnapshotConfigs`
+   skips already-triggered requests, so a subsequent `handleModify` (the app
+   config keeps changing while the snapshot is in flight) neither re-publishes
+   the request nor overwrites the app instance config saved for the snapshot.
+
+The rest of the flow (volumemgr reporting `VolumesSnapshotStatus`, zedmanager
+moving the snapshot to `AvailableSnapshots`) is identical to the offline case.
+
 #### Voluemmgr Reaction, creation
 
 When volumemgr receives the `volumesSnapshotConfig` from zedmanager, it triggers
@@ -276,6 +300,11 @@ performs the appropriate action based on the `Action` field of the config.
    handler is called to create a snapshot of the volume. This method returns the
    snapshot metadata, the time the snapshot was created, and any error that
    occurred during the snapshot creation.
+   For a live request (`Live` set in the config) `CreateLiveSnapshot` is called
+   instead, and the whole batch of volumes is wrapped by a guest freeze/thaw;
+   see [Live Snapshots](#live-snapshots) below. Both methods return the same
+   kind of metadata, so rollback and deletion do not need to know how the
+   snapshot was taken.
 5. **Storing Snapshot Metadata**: The snapshot metadata is saved in
    the `VolumeSnapshotMeta` map of the `VolumesSnapshotStatus` with the volume
    ID as the key. The time the snapshot was created is also saved in
@@ -636,6 +665,60 @@ the current state of the app instance on the device.
    status and deleting the snapshot files, the `reactToSnapshotDelete` function
    publishes the updated AppInstanceStatus.
 
+## Live Snapshots
+
+A live snapshot captures the volumes of an application instance while the
+instance keeps running. It is used for immediate snapshots of KVM domains (see
+"Zedmanager Initial Handling, live creation" above); rollback and deletion are
+never performed live, since neither `qemu-img snapshot -a/-d` nor ZFS can apply
+or destroy a snapshot underneath an open volume.
+
+The pieces involved:
+
+* **`VolumesSnapshotConfig.Live` and `DomainName`** (`types/volumetypes.go`):
+  set by zedmanager, tell volumemgr that the volumes are in use by the named
+  domain.
+* **`volumemgr/livesnapshot.go`**: the per-app-instance part. Before touching
+  any volume, `checkLiveSnapshotPossible` verifies that the QMP socket of the
+  domain (`/run/hypervisor/kvm/<domain>/qmp`) exists, i.e. the domain is a
+  running qemu instance. Then `freezeGuest` talks to the QEMU guest agent
+  through `/run/hypervisor/kvm/<domain>/qga`:
+    * if no agent answers (`ErrQgaNotResponding`) or the agent fails, a warning
+      is logged and the snapshot proceeds **crash-consistent** (the same
+      guarantee an offline snapshot of a suddenly powered-off VM gives);
+    * if the guest is already frozen by someone else, it is left alone;
+    * otherwise `guest-fsfreeze-freeze` is issued (on Windows this goes
+      through VSS, so VSS-aware applications quiesce too) and the returned
+      `thaw` function, which issues `guest-fsfreeze-thaw`, is deferred so that
+      the guest is unblocked even when a snapshot fails half-way.
+  The freeze spans all the volumes of the app instance, so they are captured at
+  the same point in time.
+* **`VolumeHandler.CreateLiveSnapshot(domainName)`** (`volumehandlers`): the
+  per-volume part.
+    * File (qcow2) volumes: qemu owns the image, so `qemu-img` must not be run
+      on it. The handler maps the volume file to qemu's block backend with the
+      QMP `query-block` command (`hypervisor.QmpFindBlockDevice`) and asks qemu
+      to create an internal snapshot with `blockdev-snapshot-internal-sync`
+      (`hypervisor.QmpExecBlockdevSnapshotInternalSync`). The snapshot name is
+      generated exactly like in `CreateSnapshot`, and the resulting internal
+      snapshot carries no VM state, so it is indistinguishable from one made
+      with `qemu-img snapshot -c`. `RollbackToSnapshot` (`qemu-img snapshot -a`)
+      and `DeleteSnapshot` (`qemu-img snapshot -d`) therefore work on it
+      unchanged once the application is stopped.
+    * ZFS volumes: ZFS snapshots are atomic and safe while the zvol is in use,
+      so `CreateLiveSnapshot` simply calls `CreateSnapshot`.
+    * Other volume types: not supported, an error is returned (the same as for
+      offline snapshots of those types).
+* **`hypervisor/qga.go`**: a minimal QEMU Guest Agent client
+  (`guest-sync-delimited`, `guest-ping`, `guest-fsfreeze-status/freeze/thaw`).
+  The guest agent channel is declared for every KVM domain in the qemu config
+  template (`virtserialport` named `org.qemu.guest_agent.0`); it is harmless
+  for guests without an agent.
+
+The QMP commands used for live snapshots are issued without the usual dial
+retries: the domain is known to be running, and a long retry loop would only
+extend the time the guest stays frozen.
+
 ## Low-Level Snapshot Management for ext4
 
 In EVE, managing snapshots for ext4 file systems involves interactions with the
@@ -647,12 +730,15 @@ and the low-level details of snapshot management.
 
 ### Snapshot Creation for ext4
 
-When creating a new snapshot, EVE must stop the application to ensure that the
-volume is not in use. The need to stop the application arises from the fact that
-the snapshot request is now triggered during the handling of a purge command,
-and an application reboot is part of this handling process. After stopping the
-application, EVE performs the snapshot operation using the qemu-img tool with
-the command
+When creating a new snapshot offline, EVE must stop the application to ensure
+that the volume is not in use: `qemu-img` cannot safely modify an image that
+qemu has open. For snapshots on upgrade the application is being stopped for
+the upgrade anyway, and the snapshot is taken during that purge handling. For
+immediate snapshots of running KVM domains the stop is avoided altogether by
+letting qemu create the internal snapshot itself (see
+[Live Snapshots](#live-snapshots)). After stopping the application, EVE
+performs the offline snapshot operation using the qemu-img tool with the
+command
 
 ```bash
 qemu-img snapshot -c snapshot_name /path/to/base_image.qcow2
@@ -710,12 +796,12 @@ to the application's operation.
 In the EVE project, managing snapshots for ZFS file systems is conducted through
 direct interaction with the ZFS filesystem via the libzfs library. This approach
 enables EVE to perform snapshot operations such as creation, rollback, and
-deletion with high efficiency and reliability. Despite the fact that ZFS
-supports creation and usage of snapshots while the file system is in use, we
-still want to wait for the application to be inactive before performing any
-snapshot operations. This is done to make the code consistent with the ext4 file
-based snapshots and to avoid any potential issues that may arise from the
-application's active use of the volume.
+deletion with high efficiency and reliability. ZFS supports creation of
+snapshots while the file system is in use, which is what live snapshots rely
+on (the guest is still quiesced through the guest agent when possible, so
+that the snapshot is filesystem-consistent and not merely crash-consistent).
+Rollback and deletion still wait for the application to be inactive, consistent
+with the ext4 file based snapshots.
 
 ### Snapshot Creation for ZFS
 

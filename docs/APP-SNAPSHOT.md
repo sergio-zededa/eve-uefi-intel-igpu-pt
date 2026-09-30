@@ -104,12 +104,24 @@ type.
   back to the controller. However, this functionality is not supported at this
   time.
 * `type`: The reason for the snapshot creation, specified using
-  the `SnapshotType` enumeration. Currently, the only supported value
-  is `SNAPSHOT_TYPE_APP_UPDATE,` which indicates that the snapshot is created as
-  a result of an application update. This type of snapshot is used to capture
-  the state of the application before an update is applied, allowing the system
-  to roll back to the previous state if needed. Other snapshot types are not
-  supported at this time.
+  the `SnapshotType` enumeration. The supported values are:
+    * `SNAPSHOT_TYPE_APP_UPDATE`: the snapshot is created as a result of an
+      application update. This type of snapshot is used to capture the state of
+      the application before an update is applied, allowing the system to roll
+      back to the previous state if needed. It is taken while the application is
+      stopped for the update, so it adds no downtime of its own.
+    * `SNAPSHOT_TYPE_IMMEDIATE`: the snapshot is created as soon as the request
+      is received. On KVM the snapshot is taken **live**, without stopping the
+      application: the hypervisor snapshots the volumes that are in use, and if
+      the guest runs the QEMU guest agent (`qemu-ga`, part of the virtio-win
+      drivers on Windows) its filesystems are frozen for the duration of the
+      snapshot so that the result is filesystem-consistent. Without a guest
+      agent the snapshot is crash-consistent. On other hypervisors, or when the
+      application is not running, the application is restarted around the
+      snapshot as before.
+
+Rolling back to a snapshot always stops the application (see below), whether
+the snapshot was taken live or not.
 
 #### Device Reporting Snapshot Creation
 

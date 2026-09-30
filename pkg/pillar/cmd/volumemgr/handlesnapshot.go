@@ -6,11 +6,13 @@ package volumemgr
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"time"
+
 	"github.com/lf-edge/eve/pkg/pillar/types"
 	"github.com/lf-edge/eve/pkg/pillar/utils"
 	fileutils "github.com/lf-edge/eve/pkg/pillar/utils/file"
 	"github.com/lf-edge/eve/pkg/pillar/volumehandlers"
-	"os"
 )
 
 func createSnapshot(ctx *volumemgrContext, config *types.VolumesSnapshotConfig) *types.VolumesSnapshotStatus {
@@ -31,7 +33,9 @@ func createSnapshot(ctx *volumemgrContext, config *types.VolumesSnapshotConfig) 
 		VolumeSnapshotMeta: make(map[string]interface{}, len(config.VolumeIDs)),
 		AppUUID:            config.AppUUID,
 	}
-	// Find the corresponding volume status
+	// Resolve all the volumes first, so that a live snapshot does not keep the
+	// guest frozen while we discover a problem that has nothing to do with it.
+	volumeHandlers := make([]volumehandlers.VolumeHandler, 0, len(config.VolumeIDs))
 	for _, volumeID := range config.VolumeIDs {
 		volumeStatus := ctx.lookupVolumeStatusByUUID(volumeID.String())
 		if volumeStatus == nil {
@@ -41,8 +45,31 @@ func createSnapshot(ctx *volumemgrContext, config *types.VolumesSnapshotConfig) 
 			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
 			return volumesSnapshotStatus
 		}
-		volumeHandler := volumehandlers.GetVolumeHandler(log, ctx, volumeStatus)
-		snapshotMeta, timeCreated, err := volumeHandler.CreateSnapshot()
+		volumeHandlers = append(volumeHandlers, volumehandlers.GetVolumeHandler(log, ctx, volumeStatus))
+	}
+	takeSnapshot := func(volumeHandler volumehandlers.VolumeHandler) (interface{}, time.Time, error) {
+		return volumeHandler.CreateSnapshot()
+	}
+	if config.Live {
+		if err := checkLiveSnapshotPossible(config); err != nil {
+			errDesc := types.ErrorDescription{}
+			errDesc.Error = fmt.Sprintf("createSnapshot: %s", err)
+			log.Error(errDesc.Error)
+			volumesSnapshotStatus.SetErrorWithSourceAndDescription(errDesc, types.VolumesSnapshotStatus{})
+			return volumesSnapshotStatus
+		}
+		// Quiesce the guest for the duration of the snapshots if it runs a
+		// guest agent. Without one the snapshots are still valid, but only
+		// crash-consistent.
+		thaw := freezeGuest(config)
+		defer thaw()
+		takeSnapshot = func(volumeHandler volumehandlers.VolumeHandler) (interface{}, time.Time, error) {
+			return volumeHandler.CreateLiveSnapshot(config.DomainName)
+		}
+	}
+	for i, volumeHandler := range volumeHandlers {
+		volumeID := config.VolumeIDs[i]
+		snapshotMeta, timeCreated, err := takeSnapshot(volumeHandler)
 		if err != nil {
 			errDesc := types.ErrorDescription{}
 			errDesc.Error = fmt.Sprintf("createSnapshot: failed to create snapshot for %s, %s", volumeID.String(), err.Error())

@@ -4,9 +4,11 @@
 package volumehandlers
 
 import (
+	"fmt"
+	"time"
+
 	"github.com/lf-edge/eve/pkg/pillar/base"
 	"github.com/lf-edge/eve/pkg/pillar/types"
-	"time"
 )
 
 // commonVolumeHandler stores common data and implements common functions
@@ -19,6 +21,11 @@ type commonVolumeHandler struct {
 
 func (handler *commonVolumeHandler) CreateSnapshot() (interface{}, time.Time, error) {
 	return nil, time.Time{}, nil
+}
+
+// CreateLiveSnapshot is not supported unless a handler explicitly implements it
+func (handler *commonVolumeHandler) CreateLiveSnapshot(_ string) (interface{}, time.Time, error) {
+	return nil, time.Time{}, fmt.Errorf("live snapshot is not supported for volume %s", handler.status.Key())
 }
 
 func (handler *commonVolumeHandler) RollbackToSnapshot(snapshotMeta interface{}) error { return nil }

@@ -286,6 +286,16 @@ func (handler *volumeHandlerZVol) CreateSnapshot() (interface{}, time.Time, erro
 	return snapshotName, time.Now(), nil
 }
 
+// CreateLiveSnapshot creates a ZFS snapshot of the zvol while it is in use.
+// ZFS snapshots are atomic and consistent by construction, so there is nothing
+// hypervisor-specific to do here; the caller is expected to have quiesced the
+// guest (if possible) beforehand.
+func (handler *volumeHandlerZVol) CreateLiveSnapshot(domainName string) (interface{}, time.Time, error) {
+	handler.log.Noticef("CreateLiveSnapshot for ZFS-based volume %s used by domain %s",
+		handler.status.Key(), domainName)
+	return handler.CreateSnapshot()
+}
+
 func (handler *volumeHandlerZVol) RollbackToSnapshot(snapshotMeta interface{}) error {
 	snapshotName, ok := snapshotMeta.(string)
 	if !ok {

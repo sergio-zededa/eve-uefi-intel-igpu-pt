@@ -14,6 +14,7 @@ import (
 	"github.com/lf-edge/edge-containers/pkg/registry"
 	zconfig "github.com/lf-edge/eve-api/go/config"
 	"github.com/lf-edge/eve/pkg/pillar/diskmetrics"
+	"github.com/lf-edge/eve/pkg/pillar/hypervisor"
 	"github.com/lf-edge/eve/pkg/pillar/types"
 )
 
@@ -200,16 +201,33 @@ func (handler *volumeHandlerFile) maybeResizeDisk(ctx context.Context, diskfile 
 	return nil
 }
 
-// CreateSnapshot creates a snapshot of the volume, returns snapshot name as metadata
+// newSnapshotName returns the name under which a new internal snapshot of the
+// volume is recorded in the qcow2 image. The name is the snapshot metadata
+// handed back to volumemgr and later used for rollback and deletion.
+func (handler *volumeHandlerFile) newSnapshotName() string {
+	return handler.status.Key() + "-snapshot-" + time.Now().Format("20060102150405")
+}
+
+// checkSnapshotFormat verifies the volume format supports internal snapshots
+func (handler *volumeHandlerFile) checkSnapshotFormat(op string) error {
+	// XXX: we only support qcow2 for now
+	if handler.status.ContentFormat != zconfig.Format_QCOW2 {
+		return fmt.Errorf("%s: unsupported format %s", op, handler.status.ContentFormat.String())
+	}
+	return nil
+}
+
+// CreateSnapshot creates a snapshot of the volume, returns snapshot name as metadata.
+// It drives qemu-img on the image file and therefore must only be used while no
+// domain has the volume open; see CreateLiveSnapshot for the other case.
 func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, error) {
 	handler.log.Noticef("CreateSnapshot for a file based volume (%s)", handler.status.FileLocation)
 	createSnapContext := context.Background()
-	snapshotName := handler.status.Key() + "-snapshot-" + time.Now().Format("20060102150405")
-	baseImagFile := handler.status.FileLocation
-	// XXX: we only support qcow2 for now
-	if handler.status.ContentFormat != zconfig.Format_QCOW2 {
-		return "", time.Time{}, fmt.Errorf("CreateSnapshot: unsupported format %s", handler.status.ContentFormat.String())
+	if err := handler.checkSnapshotFormat("CreateSnapshot"); err != nil {
+		return "", time.Time{}, err
 	}
+	snapshotName := handler.newSnapshotName()
+	baseImagFile := handler.status.FileLocation
 	err := diskmetrics.CreateSnapshot(createSnapContext, handler.log, baseImagFile, snapshotName)
 	if err != nil {
 		handler.log.Errorf("CreateSnapshot: error creating snapshot image: %s", err)
@@ -218,6 +236,37 @@ func (handler *volumeHandlerFile) CreateSnapshot() (interface{}, time.Time, erro
 	// Replace VolumeStatus with a new snapshot file
 	timeCreated := time.Now()
 	handler.log.Noticef("CreateSnapshot: created snapshot %s %s", snapshotName, timeCreated.Format("02.01.2006 at 15:04:05"))
+	return snapshotName, timeCreated, nil
+}
+
+// CreateLiveSnapshot creates an internal qcow2 snapshot of the volume while it is
+// attached to the running domain domainName. qemu owns the image at that point, so
+// instead of running qemu-img behind its back the snapshot is requested over QMP
+// (blockdev-snapshot-internal-sync). The snapshot name returned as metadata is the
+// same kind of internal snapshot name CreateSnapshot produces, so the offline
+// RollbackToSnapshot and DeleteSnapshot apply to it unchanged.
+func (handler *volumeHandlerFile) CreateLiveSnapshot(domainName string) (interface{}, time.Time, error) {
+	handler.log.Noticef("CreateLiveSnapshot for a file based volume (%s) used by domain %s",
+		handler.status.FileLocation, domainName)
+	if err := handler.checkSnapshotFormat("CreateLiveSnapshot"); err != nil {
+		return "", time.Time{}, err
+	}
+	qmpSocket := hypervisor.GetQmpExecutorSocket(domainName)
+	device, err := hypervisor.QmpFindBlockDevice(qmpSocket, handler.status.FileLocation)
+	if err != nil {
+		handler.log.Errorf("CreateLiveSnapshot: cannot map %s to a qemu block device of domain %s: %s",
+			handler.status.FileLocation, domainName, err)
+		return "", time.Time{}, fmt.Errorf("CreateLiveSnapshot: %w", err)
+	}
+	snapshotName := handler.newSnapshotName()
+	if err := hypervisor.QmpExecBlockdevSnapshotInternalSync(qmpSocket, device, snapshotName); err != nil {
+		handler.log.Errorf("CreateLiveSnapshot: error creating live snapshot of %s (%s): %s",
+			handler.status.FileLocation, device, err)
+		return "", time.Time{}, fmt.Errorf("CreateLiveSnapshot: %w", err)
+	}
+	timeCreated := time.Now()
+	handler.log.Noticef("CreateLiveSnapshot: created live snapshot %s of %s (%s) %s",
+		snapshotName, handler.status.FileLocation, device, timeCreated.Format("02.01.2006 at 15:04:05"))
 	return snapshotName, timeCreated, nil
 }
 
